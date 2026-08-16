@@ -1,3 +1,31 @@
+# myloasmSNPmers — SNPmer-only fork of myloasm
+
+> [!NOTE]
+> This is a fork of [myloasm](https://github.com/bluenote-1577/myloasm) stripped
+> down to a single purpose: **detect SNPmers and write them out, then stop.**
+>
+> A SNPmer is a pair of k-mers that are identical except at their middle base,
+> where both middle-base alleles pass a binomial test (minor allele is not just
+> sequencing error) and a Fisher's exact strand-balance test — i.e. a
+> heterozygous-SNP signature derived purely from strand-separated k-mer counts,
+> without any base alignment.
+>
+> Running the binary performs only: read parsing → k-mer counting → SNPmer
+> detection (`get_snpmers_inplace_sort`) → dump. All downstream assembly (twin
+> reads, overlaps, unitig/twin graph, mapping, polishing, dereplication) has
+> been removed from `main`.
+>
+> **Output:** `<output_dir>/snpmers.tsv` with columns:
+> `split_kmer` (the k-mer with the middle base masked to 0), `mid_pos`
+> (0-based middle position, `(k-1)/2`), `allele0_base`, `allele1_base`, the two
+> reconstructed allele k-mers, and their strand-summed `allele0_count` /
+> `allele1_count`.
+>
+> **Usage:** `myloasm <reads.fa|fq> -o <output_dir>` (k-mer size via `-k`,
+> default 21, must be odd and < 24).
+
+---
+
 # myloasm - a new metagenome assembler for (noisy) long reads
 
 >[!IMPORTANT]
