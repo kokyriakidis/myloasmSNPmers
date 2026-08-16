@@ -3,7 +3,6 @@ use crate::constants::MID_BASE_THRESHOLD_INITIAL;
 use crate::constants::MID_BASE_THRESHOLD_READ;
 use crate::constants::QUALITY_SEQ_BIN;
 use crate::constants::*;
-use crate::map_processing;
 use crate::types::*;
 use crate::utils::*;
 use bio_seq::prelude::*;
@@ -598,11 +597,52 @@ pub fn get_twin_read_syncmer(
     Some(tr)
 }
 
+// Inlined from the removed map_processing module (SNPmer-only fork): find the
+// nth minimizer from each end that fully fits within [start, end).
+fn first_last_mini_in_range(
+    start: usize,
+    end: usize,
+    k: usize,
+    nth: usize,
+    minis: &[u32],
+) -> (usize, usize) {
+    let mut first_mini = start;
+    let mut count_first = 0;
+    let mut last_mini = end;
+    let mut count_last = 0;
+
+    for mini_pos in minis.iter() {
+        if *mini_pos as usize >= start {
+            count_first += 1;
+            first_mini = *mini_pos as usize;
+        }
+        if count_first == nth {
+            break;
+        }
+    }
+
+    for mini_pos in minis.iter().rev() {
+        if *mini_pos as usize + k - 1 < end {
+            last_mini = *mini_pos as usize;
+            count_last += 1;
+        }
+        if count_last == nth {
+            break;
+        }
+    }
+
+    if last_mini <= first_mini {
+        return (start, end);
+    }
+
+    return (first_mini, last_mini);
+}
+
 pub fn overlap_hang_length(twin_read: &mut TwinRead) {
     let kmer_error_est = 1. / (twin_read.est_id.unwrap_or(100.0) / 100.).powf(twin_read.k as f64);
     let nth_read = ((MINIMIZER_END_NTH_OVERLAP as f64 * kmer_error_est) as usize).min(100);
     let minimizer_positions = twin_read.minimizer_positions();
-    let (start_hang_cutoff, end_hang_cutoff) = map_processing::first_last_mini_in_range(
+    let (start_hang_cutoff, end_hang_cutoff) = first_last_mini_in_range(
         0,
         twin_read.base_length,
         twin_read.k as usize,

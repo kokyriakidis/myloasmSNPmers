@@ -1,52 +1,107 @@
 use assert_cmd::prelude::*;
 use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 use std::process::Command;
 use tempfile::TempDir;
 
-/// Run a full assembly into `output_dir`, then re-run with `exist` and the same output
-/// dir, asserting both succeed and the final assembly is identical.
-fn run_and_checkpoint(
+// SNPmer-only fork: these tests exercise the single remaining function of the
+// binary -- run k-mer counting + SNPmer detection and write snpmers.tsv. The
+// original assembly / checkpoint-resume tests were removed along with the
+// downstream pipeline.
+
+/// Run the binary on `test_input` into a fresh temp output dir and return the
+/// path to the produced snpmers.tsv (asserting the run succeeded and the file
+/// exists).
+fn run_snpmers(
     test_input: &Path,
     extra_args: &[&str],
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<(TempDir, PathBuf), Box<dyn std::error::Error>> {
     let temp_dir = TempDir::new()?;
     let output_dir = temp_dir.path().join("output");
 
-    // First run: full assembly
     let mut cmd = Command::cargo_bin("myloasm")?;
     cmd.arg(test_input.to_str().unwrap())
         .arg("-o")
         .arg(output_dir.to_str().unwrap())
         .arg("-t")
-        .arg("20");
+        .arg("4");
     for a in extra_args {
         cmd.arg(a);
     }
     cmd.assert().success();
 
-    let first_assembly = fs::read_to_string(output_dir.join("assembly_primary.fa"))?;
-
-    // Second run: resume from checkpoints via "exist"
-    let mut cmd2 = Command::cargo_bin("myloasm")?;
-    cmd2.arg("exist")
-        .arg("-o")
-        .arg(output_dir.to_str().unwrap())
-        .arg("-t")
-        .arg("20");
-    for a in extra_args {
-        cmd2.arg(a);
-    }
-    cmd2.assert().success();
-
-    let second_assembly = fs::read_to_string(output_dir.join("assembly_primary.fa"))?;
-
-    assert_eq!(
-        first_assembly, second_assembly,
-        "Assembly output changed between full run and checkpoint resume"
+    let snpmers = output_dir.join("snpmers.tsv");
+    assert!(
+        snpmers.exists(),
+        "snpmers.tsv was not produced at {:?}",
+        snpmers
     );
+    Ok((temp_dir, snpmers))
+}
 
-    Ok(())
+/// Parse snpmers.tsv (checking the header, then skipping it) into rows.
+fn read_snpmers(path: &Path) -> Vec<Vec<String>> {
+    let content = fs::read_to_string(path).expect("read snpmers.tsv");
+    let mut lines = content.lines();
+    let header = lines.next().expect("snpmers.tsv is empty (no header)");
+    assert_eq!(
+        header,
+        "split_kmer\tmid_pos\tallele0_base\tallele1_base\tallele0_kmer\tallele1_kmer\tallele0_count\tallele1_count",
+        "unexpected snpmers.tsv header"
+    );
+    lines
+        .filter(|l| !l.is_empty())
+        .map(|l| l.split('\t').map(|s| s.to_string()).collect())
+        .collect()
+}
+
+/// Every SNPmer must be a pair of k-mers that differ at exactly one position,
+/// and that position must be the reported middle position; the middle base of
+/// each allele k-mer must match the reported allele base. An empty set is valid
+/// (e.g. a small homozygous input), so this only validates the rows present.
+fn assert_snpmers_wellformed(rows: &[Vec<String>]) {
+    for r in rows {
+        assert_eq!(r.len(), 8, "unexpected column count in row: {:?}", r);
+        let mid_pos: usize = r[1].parse().expect("mid_pos");
+        let a0 = &r[4];
+        let a1 = &r[5];
+        assert_eq!(a0.len(), a1.len(), "allele k-mers differ in length");
+
+        let bytes0 = a0.as_bytes();
+        let bytes1 = a1.as_bytes();
+        let mut diffs = 0usize;
+        let mut diff_at_mid = false;
+        for i in 0..bytes0.len() {
+            if bytes0[i] != bytes1[i] {
+                diffs += 1;
+                if i == mid_pos {
+                    diff_at_mid = true;
+                }
+            }
+        }
+        assert_eq!(diffs, 1, "SNPmer alleles must differ at exactly one base: {:?}", r);
+        assert!(diff_at_mid, "the single difference must be at mid_pos: {:?}", r);
+
+        // Reported allele bases must match the middle base of each k-mer.
+        assert_eq!(
+            &a0[mid_pos..mid_pos + 1],
+            r[2],
+            "allele0 mid base mismatch: {:?}",
+            r
+        );
+        assert_eq!(
+            &a1[mid_pos..mid_pos + 1],
+            r[3],
+            "allele1 mid base mismatch: {:?}",
+            r
+        );
+
+        // Counts must be positive integers.
+        let c0: u64 = r[6].parse().expect("allele0_count");
+        let c1: u64 = r[7].parse().expect("allele1_count");
+        assert!(c0 > 0 && c1 > 0, "allele counts must be positive: {:?}", r);
+    }
 }
 
 #[test]
@@ -57,158 +112,37 @@ fn test_missing_input() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
-fn test_nanopore_basic_run_2kb_plasmid() -> Result<(), Box<dyn std::error::Error>> {
-    let temp_dir = TempDir::new()?;
-    let output_dir = temp_dir.path().join("output");
-
-    let test_input = Path::new("tests/reads/2kb_plas.fq");
-
-    let mut cmd = Command::cargo_bin("myloasm")?;
-    cmd.arg(test_input.to_str().unwrap())
-        .arg("-o")
-        .arg(output_dir.to_str().unwrap())
-        .arg("-t")
-        .arg("20"); // Use fewer threads for testing
-
-    cmd.assert().success();
-
-    // Check output directory exists and contains expected files
-    assert!(output_dir.exists());
-    assert!(output_dir.join("assembly_primary.fa").exists());
-
-    //Check the assembly file has > 1.8kb and <2kb and has only one contig
-    let assembly_file = output_dir.join("assembly_primary.fa");
-    let assembly_content = fs::read_to_string(&assembly_file)?;
-    let contigs: Vec<&str> = assembly_content
-        .lines()
-        .filter(|line| line.starts_with('>'))
-        .collect();
-    println!("Contigs found: {:?}", contigs);
-    assert_eq!(
-        contigs.len(),
-        1,
-        "Expected 1 contig, found {}",
-        contigs.len()
-    );
-    let contig_length = assembly_content
-        .lines()
-        .filter(|line| !line.starts_with('>'))
-        .collect::<String>()
-        .len();
-    assert!(
-        contig_length > 1800 && contig_length < 2000,
-        "Expected contig length between 1800 and 2000, found {}",
-        contig_length
-    );
-
+fn test_snpmers_produced_2kb_plasmid() -> Result<(), Box<dyn std::error::Error>> {
+    let (_tmp, snpmers) = run_snpmers(Path::new("tests/reads/2kb_plas.fq"), &[])?;
+    let rows = read_snpmers(&snpmers);
+    assert_snpmers_wellformed(&rows);
     Ok(())
 }
 
 #[test]
-fn test_nanopore_basic_run_48kb_plasmid() -> Result<(), Box<dyn std::error::Error>> {
-    let temp_dir = TempDir::new()?;
-    let output_dir = temp_dir.path().join("output");
-
-    let test_input = Path::new("tests/reads/40kb_plas.fq");
-
-    let mut cmd = Command::cargo_bin("myloasm")?;
-    cmd.arg(test_input.to_str().unwrap())
-        .arg("-o")
-        .arg(output_dir.to_str().unwrap())
-        .arg("-t")
-        .arg("20"); // Use fewer threads for testing
-
-    cmd.assert().success();
-
-    // Check output directory exists and contains expected files
-    assert!(output_dir.exists());
-    assert!(output_dir.join("assembly_primary.fa").exists());
-
-    //Check the assembly file has > 1.8kb and <2kb and has only one contig
-    let assembly_file = output_dir.join("assembly_primary.fa");
-    let assembly_content = fs::read_to_string(&assembly_file)?;
-    let contigs: Vec<&str> = assembly_content
-        .lines()
-        .filter(|line| line.starts_with('>'))
-        .collect();
-    println!("Contigs found: {:?}", contigs);
-    assert_eq!(
-        contigs.len(),
-        1,
-        "Expected 1 contig, found {}",
-        contigs.len()
-    );
-    let contig_length = assembly_content
-        .lines()
-        .filter(|line| !line.starts_with('>'))
-        .collect::<String>()
-        .len();
-    assert!(
-        contig_length > 40000 && contig_length < 60000,
-        "Expected contig length between 40000 and 60000, found {}",
-        contig_length
-    );
-
-    Ok(())
-}
-
-// ── Checkpoint / "exist" tests ────────────────────────────────────────────────
-
-/// Full run → exist resume produces identical assembly (2 kb plasmid).
-#[test]
-fn test_exist_checkpoint_2kb_plasmid() -> Result<(), Box<dyn std::error::Error>> {
-    run_and_checkpoint(Path::new("tests/reads/2kb_plas.fq"), &[])
-}
-
-/// Full run → exist resume produces identical assembly (48 kb plasmid).
-#[test]
-fn test_exist_checkpoint_48kb_plasmid() -> Result<(), Box<dyn std::error::Error>> {
-    run_and_checkpoint(Path::new("tests/reads/40kb_plas.fq"), &[])
-}
-
-/// Verify that passing "exist" without a prior run (no binary_temp) exits with failure.
-#[test]
-fn test_exist_without_prior_run_fails() -> Result<(), Box<dyn std::error::Error>> {
-    let temp_dir = TempDir::new()?;
-    let output_dir = temp_dir.path().join("output");
-
-    let mut cmd = Command::cargo_bin("myloasm")?;
-    cmd.arg("exist")
-        .arg("-o")
-        .arg(output_dir.to_str().unwrap())
-        .arg("-t")
-        .arg("4");
-    cmd.assert().failure();
+fn test_snpmers_produced_48kb_plasmid() -> Result<(), Box<dyn std::error::Error>> {
+    let (_tmp, snpmers) = run_snpmers(Path::new("tests/reads/40kb_plas.fq"), &[])?;
+    let rows = read_snpmers(&snpmers);
+    assert!(!rows.is_empty(), "expected SNPmers from the 48kb plasmid");
+    assert_snpmers_wellformed(&rows);
     Ok(())
 }
 
 #[test]
-fn test_nanopore_basic_run_48kb_plasmid_fasta() -> Result<(), Box<dyn std::error::Error>> {
-    let temp_dir = TempDir::new()?;
-    let output_dir = temp_dir.path().join("output");
+fn test_snpmers_produced_48kb_plasmid_fasta() -> Result<(), Box<dyn std::error::Error>> {
+    let (_tmp, snpmers) = run_snpmers(Path::new("tests/reads/40kb_plas.fa"), &[])?;
+    let rows = read_snpmers(&snpmers);
+    assert_snpmers_wellformed(&rows);
+    Ok(())
+}
 
-    let test_input = Path::new("tests/reads/40kb_plas.fa");
-
-    let mut cmd = Command::cargo_bin("myloasm")?;
-    cmd.arg(test_input.to_str().unwrap())
-        .arg("-o")
-        .arg(output_dir.to_str().unwrap())
-        .arg("-t")
-        .arg("20"); // Use fewer threads for testing
-
-    cmd.assert().success();
-
-    // Check output directory exists and contains expected files
-    assert!(output_dir.exists());
-    assert!(output_dir.join("assembly_primary.fa").exists());
-
-    //Check the assembly file has > 1.8kb and <2kb and has only one contig
-    let assembly_file = output_dir.join("assembly_primary.fa");
-    let assembly_content = fs::read_to_string(&assembly_file)?;
-    let contigs: Vec<&str> = assembly_content
-        .lines()
-        .filter(|line| line.starts_with('>'))
-        .collect();
-    println!("Contigs found: {:?}", contigs);
+#[test]
+fn test_snpmers_deterministic() -> Result<(), Box<dyn std::error::Error>> {
+    // Two runs on the same input must produce identical snpmers.tsv.
+    let (_tmp1, s1) = run_snpmers(Path::new("tests/reads/40kb_plas.fq"), &[])?;
+    let (_tmp2, s2) = run_snpmers(Path::new("tests/reads/40kb_plas.fq"), &[])?;
+    let c1 = fs::read_to_string(&s1)?;
+    let c2 = fs::read_to_string(&s2)?;
+    assert_eq!(c1, c2, "snpmers.tsv differed between two runs on the same input");
     Ok(())
 }

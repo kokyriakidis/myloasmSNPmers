@@ -4,10 +4,10 @@ use crate::constants::MAX_KMER_COUNT_IN_READ;
 use crate::constants::MIN_READ_LENGTH;
 use crate::constants::USE_SOLID_KMERS;
 use crate::seeding;
-use crate::twin_graph;
 use crate::types::*;
 use crate::utils;
 use fishers_exact::fishers_exact;
+use statrs::distribution::{Binomial, DiscreteCDF};
 use fxhash::FxHashMap;
 use fxhash::FxHashSet;
 use rayon::prelude::*;
@@ -393,9 +393,9 @@ pub fn get_snpmers_inplace_sort(
                         let n = pairsvec[0].1[0] + pairsvec[0].1[1];
                         let succ = pairsvec[1].1[0] + pairsvec[1].1[1];
                         let right_p_val_thresh1 =
-                            twin_graph::binomial_test(n as u64, succ as u64, 0.025);
+                            binomial_test(n as u64, succ as u64, 0.025);
                         let right_p_val_thresh2 =
-                            twin_graph::binomial_test(n as u64, succ as u64, 0.050);
+                            binomial_test(n as u64, succ as u64, 0.050);
                         let cond1 = right_p_val_thresh1 > 0.05;
                         let cond2 = right_p_val_thresh2 > 0.05 && k < 5;
 
@@ -585,8 +585,8 @@ pub fn get_snpmers(big_kmer_map: Vec<(Kmer64, [u32; 2])>, k: usize, args: &Cli) 
                 //and the smallest alleles will have a low count.
                 let n = counts[0][0] + counts[0][1];
                 let succ = counts[1][0] + counts[1][1];
-                let right_p_val_thresh1 = twin_graph::binomial_test(n as u64, succ as u64, 0.025);
-                let right_p_val_thresh2 = twin_graph::binomial_test(n as u64, succ as u64, 0.050);
+                let right_p_val_thresh1 = binomial_test(n as u64, succ as u64, 0.025);
+                let right_p_val_thresh2 = binomial_test(n as u64, succ as u64, 0.050);
                 let cond1 = right_p_val_thresh1 > 0.05;
                 let cond2 = right_p_val_thresh2 > 0.05 && k < 5;
                 if cond1 || cond2 {
@@ -700,4 +700,13 @@ pub fn parse_unitigs_into_table(cuttlefish_file: &str) -> (FxHashMap<u64, u32>, 
         count += 1;
     }
     return (kmer_to_unitig_count, unitig_vec);
+}
+
+// Moved from twin_graph (removed in the SNPmer-only fork). Used by the SNPmer
+// minor-allele test in get_snpmers_inplace_sort: probability of observing k or
+// more successes in n trials under Binomial(n, p).
+pub fn binomial_test(n: u64, k: u64, p: f64) -> f64 {
+    let binomial = Binomial::new(p, n).unwrap();
+    let p_value = 1.0 - binomial.cdf(k);
+    p_value
 }

@@ -23,6 +23,12 @@
 >
 > **Usage:** `myloasm <reads.fa|fq> -o <output_dir>` (k-mer size via `-k`,
 > default 21, must be odd and < 24).
+>
+> **Build:** this fork drops the downstream assembly modules and their heavy
+> dependencies (rust-spoa / abpoa / skani and the `src/rust-spoa`, `src/skani`
+> vendored trees), so it builds from a clean checkout with a plain
+> `cargo build --release` — no git submodules and no C/C++ POA/skani
+> compilation required.
 
 ---
 

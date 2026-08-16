@@ -29,22 +29,13 @@ rust-lapper = { version = "1.1", features = ["with_serde"]}
 memory-stats = "1.2.0"
 fastbloom = "0.17.0"
 crossbeam-channel = "0.5.13"
-flate2 = { version = "1.0.17", features = ["zlib-ng"], default-features = false }
-gzp = { version = "0.11.3", default-features = false, features = ["deflate_rust"] }
-rand = "0.8.5"
-ordered-float = { version = "4.0", default-features = false }
-rust-spoa = { path = "src/rust-spoa" }
-abpoa = { git = "https://github.com/bluenote-1577/abpoa-rs" }
 tikv-jemallocator = "0.4.0"
-skani = { path = "src/skani" }
 sysinfo = "0.34.2"
-built = "0.7"
-clap-num = "1.2.0"
-wide = "=0.7.33"
 block-aligner = { version = "0.5" }
 clap-markdown = { git = "https://github.com/bluenote-1577/clap-markdown.git" }
 minimum_redundancy = "0.3.3"
-boomphf = "0.6.0"
+# Removed in the SNPmer-only fork (downstream-only deps): rust-spoa, abpoa,
+# skani, gzp, flate2, rand, ordered-float, wide, built, clap-num, boomphf.
 
 [features]
 default = ["avx2"]
@@ -54,9 +45,6 @@ sse = ["block-aligner/simd_sse2"]
 
 [target.'cfg(target_arch = "aarch64")'.features]
 default = ["neon"]
-
-[build-dependencies]
-built = { version = "0.7", features = ["chrono"] }
 
 #crossbeam-utils = "*"
 

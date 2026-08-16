@@ -1,21 +1,14 @@
+// SNPmer-only fork: only the modules on the SNPmer detection path are kept.
+// Removed downstream modules: graph, map_processing, mapping, mphmap, polishing,
+// polishing_mod, skani_dereplicate, small_genomes, twin_graph, unitig,
+// unitig_utils.
 pub mod cli;
 pub mod constants;
-pub mod graph;
 pub mod kmc_reader;
 pub mod kmer_comp;
-pub mod map_processing;
-pub mod mapping;
-pub mod mphmap;
-pub mod polishing;
-pub mod polishing_mod;
 pub mod seeding;
 pub mod seq_parse;
-pub mod skani_dereplicate;
-pub mod small_genomes;
-pub mod twin_graph;
 pub mod types;
-pub mod unitig;
-pub mod unitig_utils;
 pub mod utils;
 
 //pub mod cbloom;
