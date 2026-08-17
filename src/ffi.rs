@@ -22,6 +22,7 @@ use clap::Parser;
 use crate::chain;
 use crate::cli::Cli;
 use crate::kmer_comp;
+use crate::overlap;
 use crate::seq_parse;
 use crate::types::KmerGlobalInfo;
 
@@ -618,4 +619,226 @@ pub unsafe extern "C" fn myloasm_read_index_free(idx: *mut MyloReadIndex) {
         drop(Vec::from_raw_parts(s.name_arena, s.name_len, s.name_cap));
     }
     std::ptr::write(idx, zeroed_read_index());
+}
+
+// ---------------------------------------------------------------------------
+// Native all-vs-all overlap detection.
+//
+// Runs myloasm's own overlapper (restored in src/overlap.rs from the pre-strip
+// assembler): index every read's syncmers, find candidate pairs by shared
+// minimizers, chain with the shared DP, refine with SNPmers, and emit dovetail
+// + containment overlaps. This is the myloasm-native replacement for the
+// hifiasm candidate + fakechain path.
+// ---------------------------------------------------------------------------
+
+/// One overlap between two reads. Coordinates are forward-strand, half-open, on
+/// each read's own sequence. `reverse` = read2 is reverse-complemented relative
+/// to read1. `#[repr(C)]`.
+#[repr(C)]
+pub struct MyloOverlap {
+    pub read_i: u32,
+    pub read_j: u32,
+    pub start1: u32,
+    pub end1: u32,
+    pub start2: u32,
+    pub end2: u32,
+    pub shared_minimizers: u32,
+    pub shared_snpmers: u32,
+    pub diff_snpmers: u32,
+    /// 1 = read_j is reverse-complemented w.r.t. read_i, 0 = same strand.
+    pub reverse: u8,
+    /// 1 = one read is contained in the other, 0 = dovetail.
+    pub contained: u8,
+    pub _pad: [u8; 2],
+}
+
+/// Result of `myloasm_detect_overlaps`. `overlaps`/`n_overlaps` is the overlap
+/// array; `names`/`name_offsets`/`n_reads` map each read index (read_i/read_j)
+/// to its base id (name_offsets has n_reads+1 entries, byte ranges into names).
+/// Free with `myloasm_overlaps_free`. `#[repr(C)]`.
+#[repr(C)]
+pub struct MyloOverlaps {
+    pub overlaps: *mut MyloOverlap,
+    pub n_overlaps: usize,
+    overlaps_cap: usize,
+
+    pub names: *mut c_char,
+    pub name_offsets: *mut usize,
+    pub n_reads: usize,
+    names_cap: usize,
+    name_offsets_cap: usize,
+}
+
+fn zeroed_overlaps() -> MyloOverlaps {
+    MyloOverlaps {
+        overlaps: std::ptr::null_mut(),
+        n_overlaps: 0,
+        overlaps_cap: 0,
+        names: std::ptr::null_mut(),
+        name_offsets: std::ptr::null_mut(),
+        n_reads: 0,
+        names_cap: 0,
+        name_offsets_cap: 0,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn myloasm_detect_overlaps(
+    paths: *const *const c_char,
+    n_paths: usize,
+    kmer_size: c_int,
+    c: c_int,
+    threads: c_int,
+    out: *mut MyloOverlaps,
+) -> c_int {
+    if out.is_null() {
+        return 1;
+    }
+    std::ptr::write(out, zeroed_overlaps());
+    if paths.is_null() || n_paths == 0 {
+        return 2;
+    }
+
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        let mut files: Vec<String> = Vec::with_capacity(n_paths);
+        for i in 0..n_paths {
+            let p = *paths.add(i);
+            if p.is_null() {
+                return Err(3);
+            }
+            match CStr::from_ptr(p).to_str() {
+                Ok(s) => files.push(s.to_owned()),
+                Err(_) => return Err(4),
+            }
+        }
+
+        let mut argv: Vec<String> = vec!["myloasm".to_string()];
+        argv.extend(files.iter().cloned());
+        let mut args = Cli::parse_from(argv);
+        if kmer_size > 0 {
+            args.kmer_size = kmer_size as usize;
+        }
+        if args.kmer_size % 2 == 0 {
+            return Err(5); // k must be odd
+        }
+        if c > 0 {
+            args.c = c as usize;
+        }
+        if threads > 0 {
+            args.threads = threads as usize;
+        }
+
+        let _ = rayon::ThreadPoolBuilder::new()
+            .num_threads(args.threads)
+            .stack_size(16 * 1024 * 1024)
+            .build_global();
+
+        // Same read -> twin-reads pipeline as myloasm_index_reads.
+        let big = seq_parse::read_to_split_kmers(args.kmer_size, args.threads, &args);
+        let mut info: KmerGlobalInfo =
+            kmer_comp::get_snpmers_inplace_sort(big, args.kmer_size, &args);
+        let twins = kmer_comp::twin_reads_from_snpmers(&mut info, &args);
+
+        // All reads are "outer" reads: run all-vs-all over the full set.
+        let outer: Vec<usize> = (0..twins.len()).collect();
+        let configs = overlap::get_overlaps_outer_reads_twin(
+            &twins, &outer, &args, None, None,
+        );
+
+        // Pack overlaps.
+        let mut overlaps: Vec<MyloOverlap> = Vec::with_capacity(configs.len());
+        for oc in configs.iter() {
+            overlaps.push(MyloOverlap {
+                read_i: oc.read_i as u32,
+                read_j: oc.read_j as u32,
+                start1: oc.start1 as u32,
+                end1: oc.end1 as u32,
+                start2: oc.start2 as u32,
+                end2: oc.end2 as u32,
+                shared_minimizers: oc.shared_mini as u32,
+                shared_snpmers: oc.shared_snpmer as u32,
+                diff_snpmers: oc.diff_snpmer as u32,
+                reverse: if oc.reverse { 1 } else { 0 },
+                contained: if oc.contained { 1 } else { 0 },
+                _pad: [0; 2],
+            });
+        }
+
+        // Pack read names (base id) so the host can map read_i/read_j -> dinara
+        // reads, exactly like myloasm_index_reads.
+        let mut name_arena: Vec<u8> = Vec::new();
+        let mut name_offsets: Vec<usize> = Vec::with_capacity(twins.len() + 1);
+        name_offsets.push(0);
+        for tr in twins.iter() {
+            name_arena.extend_from_slice(tr.base_id.as_bytes());
+            name_offsets.push(name_arena.len());
+        }
+
+        Ok((overlaps, name_arena, name_offsets, twins.len()))
+    }));
+
+    match result {
+        Ok(Ok((mut overlaps, mut name_arena, mut name_offsets, n_reads))) => {
+            overlaps.shrink_to_fit();
+            name_arena.shrink_to_fit();
+            name_offsets.shrink_to_fit();
+
+            let o = MyloOverlaps {
+                overlaps: overlaps.as_mut_ptr(),
+                n_overlaps: overlaps.len(),
+                overlaps_cap: overlaps.capacity(),
+                names: name_arena.as_mut_ptr() as *mut c_char,
+                name_offsets: name_offsets.as_mut_ptr(),
+                n_reads,
+                names_cap: name_arena.capacity(),
+                name_offsets_cap: name_offsets.capacity(),
+            };
+            std::mem::forget(overlaps);
+            std::mem::forget(name_arena);
+            std::mem::forget(name_offsets);
+            std::ptr::write(out, o);
+            0
+        }
+        Ok(Err(code)) => code,
+        Err(_) => 100,
+    }
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn myloasm_overlaps_free(ov: *mut MyloOverlaps) {
+    if ov.is_null() {
+        return;
+    }
+    let s = &mut *ov;
+    if !s.overlaps.is_null() {
+        drop(Vec::from_raw_parts(s.overlaps, s.n_overlaps, s.overlaps_cap));
+    }
+    if !s.names.is_null() {
+        drop(Vec::from_raw_parts(
+            s.names as *mut u8,
+            s.name_offsets_last(),
+            s.names_cap,
+        ));
+    }
+    if !s.name_offsets.is_null() {
+        // name_offsets has n_reads+1 entries.
+        drop(Vec::from_raw_parts(
+            s.name_offsets,
+            s.n_reads + 1,
+            s.name_offsets_cap,
+        ));
+    }
+    std::ptr::write(ov, zeroed_overlaps());
+}
+
+impl MyloOverlaps {
+    // Total name-arena byte length = last entry of name_offsets. Read before
+    // name_offsets is freed.
+    unsafe fn name_offsets_last(&self) -> usize {
+        if self.name_offsets.is_null() || self.n_reads == 0 {
+            0
+        } else {
+            *self.name_offsets.add(self.n_reads)
+        }
+    }
 }
