@@ -8,6 +8,13 @@ license = "MIT OR Apache-2.0"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
+[lib]
+name = "myloasm"
+# rlib: consumed by the myloasm binary; staticlib: linked into the hifiasm
+# fork via the C ABI in src/ffi.rs.
+crate-type = ["rlib", "staticlib"]
+path = "src/lib.rs"
+
 [dependencies]
 needletail = {version = "0.6.3", features = ["bzip2", "flate2"], default-features = false}
 #simple_logger=  { version = "3", features = ["stderr"] }

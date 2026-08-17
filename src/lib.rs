@@ -4,6 +4,7 @@
 // unitig_utils.
 pub mod cli;
 pub mod constants;
+pub mod ffi;
 pub mod kmc_reader;
 pub mod kmer_comp;
 pub mod seeding;
