@@ -137,6 +137,14 @@ pub struct Cli {
     #[arg(long, default_value_t=false, help_heading = CLI_HEADINGS[2], hide = true)]
     pub no_snpmers: bool,
 
+    /// Disable contained-read removal during overlapping (keeps overlaps of contained reads, like hifiasm raw candidates)
+    #[arg(long, default_value_t=false, help_heading = CLI_HEADINGS[2], hide = true)]
+    pub no_containment_removal: bool,
+
+    /// Disable the SNPmer same-strain identity gate on overlaps (emit overlaps regardless of SNPmer identity / binomial miscall test)
+    #[arg(long, default_value_t=false, help_heading = CLI_HEADINGS[2], hide = true)]
+    pub no_same_strain_filter: bool,
+
     /// Batch size of indexing for read-to-read mapping and overlap stage. Higher = faster, but more memory.
     #[arg(long, default_value_t=1_000_000, help_heading =CLI_HEADINGS[3], hide = true)]
     pub read_map_batch_size: usize,

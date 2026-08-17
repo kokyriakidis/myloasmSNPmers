@@ -883,7 +883,7 @@ pub fn get_overlaps_outer_reads_twin(
                         snpmer_threshold = read2.snpmer_id_threshold.unwrap_or(100.);
                     }
                     if twlap_contain {
-                        if same_strain(twlap.shared_minimizers, twlap.diff_snpmers, twlap.shared_snpmers, args.c as u64, snpmer_threshold, args.snpmer_error_rate_strict, twlap.large_indel){
+                        if !args.no_containment_removal && same_strain(twlap.shared_minimizers, twlap.diff_snpmers, twlap.shared_snpmers, args.c as u64, snpmer_threshold, args.snpmer_error_rate_strict, twlap.large_indel){
                             contained_reads_again.lock().unwrap().insert(smaller_read_index);
 
                             writeln!(bufwriter_contained.lock().unwrap(), "{} ({}) {} ({}), SMALLER: {}, LEN1: {} RANGE1: {}-{}, LEN2:{} RANGE2: {}-{}, SNP_DIFF: {}, SNP_SHARE: {}, MINI: {}",
@@ -895,7 +895,7 @@ pub fn get_overlaps_outer_reads_twin(
                     }
                 }
 
-                if possible_containment {
+                if possible_containment && !args.no_containment_removal {
                     if twlaps.len() == 1 {
                         let twlap = &twlaps[0];
                         let contained_overlap_config = OverlapConfig{
@@ -1040,15 +1040,16 @@ where
         args.c as u64,
         twlap.large_indel,
     );
-    let same_strain_lax = same_strain(
-        twlap.shared_minimizers,
-        twlap.diff_snpmers,
-        twlap.shared_snpmers,
-        args.c as u64,
-        args.snpmer_threshold_lax,
-        args.snpmer_error_rate_lax,
-        twlap.large_indel,
-    );
+    let same_strain_lax = args.no_same_strain_filter
+        || same_strain(
+            twlap.shared_minimizers,
+            twlap.diff_snpmers,
+            twlap.shared_snpmers,
+            args.c as u64,
+            args.snpmer_threshold_lax,
+            args.snpmer_error_rate_lax,
+            twlap.large_indel,
+        );
 
     let aln_len1 = twlap.end1 - twlap.start1;
     let aln_len2 = twlap.end2 - twlap.start2;

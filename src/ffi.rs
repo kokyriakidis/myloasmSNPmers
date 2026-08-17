@@ -728,6 +728,22 @@ pub unsafe extern "C" fn myloasm_detect_overlaps(
             args.threads = threads as usize;
         }
 
+        // Overlap-filter overrides via environment (no C ABI change needed).
+        // Set MYLOASM_NO_CONTAINMENT_REMOVAL=1 to keep overlaps of contained
+        // reads (hifiasm-raw-candidate-like). Set MYLOASM_NO_SAME_STRAIN_FILTER=1
+        // to bypass the SNPmer same-strain identity gate on emitted overlaps.
+        let env_true = |k: &str| {
+            std::env::var(k)
+                .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+                .unwrap_or(false)
+        };
+        if env_true("MYLOASM_NO_CONTAINMENT_REMOVAL") {
+            args.no_containment_removal = true;
+        }
+        if env_true("MYLOASM_NO_SAME_STRAIN_FILTER") {
+            args.no_same_strain_filter = true;
+        }
+
         let _ = rayon::ThreadPoolBuilder::new()
             .num_threads(args.threads)
             .stack_size(16 * 1024 * 1024)
