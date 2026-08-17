@@ -2,6 +2,7 @@
 // Removed downstream modules: graph, map_processing, mapping, mphmap, polishing,
 // polishing_mod, skani_dereplicate, small_genomes, twin_graph, unitig,
 // unitig_utils.
+pub mod chain;
 pub mod cli;
 pub mod constants;
 pub mod ffi;
